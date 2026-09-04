@@ -34,7 +34,7 @@ def _generate_pkce_pair() -> tuple[str, str]:
     return verifier, challenge
 
 
-@router.get("/login")
+@router.get("/login/sso")
 async def login(redirect: str | None = Query(default=None)) -> RedirectResponse:
     """Start the OIDC login flow: redirect the browser to the IdP's authorization endpoint.
 

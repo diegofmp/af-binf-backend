@@ -7,7 +7,7 @@ hand to security review.
 
 ## The pattern
 
-1. `GET /auth/login` redirects the browser to the IdP's authorization
+1. `GET /auth/login/sso` redirects the browser to the IdP's authorization
    endpoint. Before redirecting, it generates a `state` value and a PKCE
    `code_verifier`/`code_challenge` pair, and stores `{state -> code_verifier,
    post_login_redirect}` in Redis with a 10-minute TTL. Nothing sensitive is

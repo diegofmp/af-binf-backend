@@ -10,7 +10,7 @@ _SAFE_METHODS = {"GET", "HEAD", "OPTIONS", "TRACE"}
 # Auth endpoints that establish or tear down the session cookie itself can't
 # carry a CSRF token yet (login/callback are top-level browser navigations
 # from the IdP, not fetch() calls the frontend controls).
-_EXEMPT_PATHS = {"/auth/login", "/auth/callback"}
+_EXEMPT_PATHS = {"/auth/login/sso", "/auth/callback"}
 
 
 class CSRFMiddleware(BaseHTTPMiddleware):

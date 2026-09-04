@@ -28,7 +28,7 @@ class Settings(BaseSettings):
     oidc_issuer: str = "https://sso.example.com/realms/example"
     oidc_client_id: str = "af-binf-backend"
     oidc_client_secret: str = "change-me"
-    oidc_redirect_uri: str = "http://localhost:8000/auth/callback"
+    oidc_redirect_uri: str = "http://localhost:8000/api/auth/callback"
     oidc_scopes: str = "openid profile email"
     oidc_post_login_redirect: str = "http://localhost:5173/"
 
