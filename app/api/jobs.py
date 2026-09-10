@@ -3,6 +3,7 @@ import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.concurrency import run_in_threadpool
+from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -31,7 +32,15 @@ async def create_job(
     """
     try:
         validated_input = payload.validated_input()
-    except Exception as exc:  # pydantic ValidationError et al.
+    except ValidationError as exc:
+        # Same shape FastAPI itself uses for request-body 422s, so clients
+        # that already know how to render that (e.g. per-field messages)
+        # handle this identically instead of getting a dumped repr.
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=exc.errors(include_url=False, include_context=False, include_input=False),
+        ) from exc
+    except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"invalid input for {payload.version.value}: {exc}",

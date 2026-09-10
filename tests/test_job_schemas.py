@@ -4,59 +4,59 @@ from pydantic import ValidationError
 from app.schemas.af2 import AF2Input
 from app.schemas.af3 import AF3Input
 
+GENERAL = {"email": "diego@example.com", "ppmsProject": "my_project", "sampleId": "my_sample"}
+
+
+def _af2_sample(**overrides):
+    sample = {
+        "database": {"database": "full_dbs"},
+        "model": {"model": "monomer"},
+        "sequence": {
+            "sequence": "MKTAYIAKQRQISFVKSHFSRQLEERLGLIEVQAPILSRVGDGTQDNLSGAEKAVQVKVKALPDAQFEVVHSLAKWKR"
+        },
+    }
+    sample.update(overrides)
+    return sample
+
 
 def test_af2_monomer_valid():
-    payload = AF2Input(
-        job_type="monomer",
-        sequences=[{"id": "A", "sequence": "MKTAYIAKQRQISFVKSHFSRQLEERLGLIEVQAPILSRVGDGTQDNLSGAEKAVQVKVKALPDAQFEVVHSLAKWKR"}],
-        num_predicted_models=5,
-    )
-    assert payload.job_type == "monomer"
-    assert len(payload.sequences) == 1
+    payload = AF2Input(general=GENERAL, sample=_af2_sample())
+    assert payload.general.ppms_project == "my_project"
+    assert payload.sample.model.model == "monomer"
+    assert payload.sample.database.database == "full_dbs"
 
 
-def test_af2_monomer_rejects_multiple_sequences():
+def test_af2_rejects_multimer_as_not_yet_supported():
     with pytest.raises(ValidationError):
-        AF2Input(
-            job_type="monomer",
-            sequences=[
-                {"id": "A", "sequence": "MKTAYIAKQRQISFVKSHFSRQLEERLGLI"},
-                {"id": "B", "sequence": "MKTAYIAKQRQISFVKSHFSRQLEERLGLI"},
-            ],
-        )
-
-
-def test_af2_multimer_requires_at_least_two_sequences():
-    with pytest.raises(ValidationError):
-        AF2Input(
-            job_type="multimer",
-            sequences=[{"id": "A", "sequence": "MKTAYIAKQRQISFVKSHFSRQLEERLGLI"}],
-        )
+        AF2Input(general=GENERAL, sample=_af2_sample(model={"model": "multimer"}))
 
 
 def test_af2_rejects_invalid_sequence_characters():
     with pytest.raises(ValidationError):
-        AF2Input(
-            job_type="monomer",
-            sequences=[{"id": "A", "sequence": "MKTAYIAKQ123!!!"}],
-        )
+        AF2Input(general=GENERAL, sample=_af2_sample(sequence={"sequence": "MKTAYIAKQ123!!!"}))
 
 
 def test_af2_precomputed_msa_requires_path():
     with pytest.raises(ValidationError):
         AF2Input(
-            job_type="monomer",
-            sequences=[{"id": "A", "sequence": "MKTAYIAKQRQISFVKSHFSRQLEERLGLI"}],
-            msa_options={"use_precomputed_msa": True},
+            general=GENERAL,
+            sample=_af2_sample(msaOptions={"use_precomputed_msa": True}),
         )
 
 
-def test_af2_rejects_invalid_job_type():
+def test_af2_rejects_invalid_model():
     with pytest.raises(ValidationError):
-        AF2Input(
-            job_type="dimer",
-            sequences=[{"id": "A", "sequence": "MKTAYIAKQRQISFVKSHFSRQLEERLGLI"}],
-        )
+        AF2Input(general=GENERAL, sample=_af2_sample(model={"model": "dimer"}))
+
+
+def test_af2_rejects_invalid_database():
+    with pytest.raises(ValidationError):
+        AF2Input(general=GENERAL, sample=_af2_sample(database={"database": "nonexistent_dbs"}))
+
+
+def test_af2_requires_general_info():
+    with pytest.raises(ValidationError):
+        AF2Input(general={"email": "diego@example.com"}, sample=_af2_sample())
 
 
 def test_af3_protein_ligand_valid():
@@ -106,7 +106,7 @@ async def test_submitting_af2_job_with_malformed_input_is_rejected(authed_client
         json={
             "version": "af2",
             "name": "bad job",
-            "input": {"job_type": "monomer", "sequences": []},
+            "input": {"general": GENERAL, "sample": _af2_sample(sequence={"sequence": ""})},
         },
     )
     assert resp.status_code == 422
@@ -130,10 +130,7 @@ async def test_submitting_valid_af2_job_creates_submitted_job(authed_client):
         json={
             "version": "af2",
             "name": "my first fold",
-            "input": {
-                "job_type": "monomer",
-                "sequences": [{"id": "A", "sequence": "MKTAYIAKQRQISFVKSHFSRQLEERLGLI"}],
-            },
+            "input": {"general": GENERAL, "sample": _af2_sample()},
         },
     )
     assert resp.status_code == 201

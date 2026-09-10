@@ -4,6 +4,15 @@ from sqlalchemy import select
 
 from app.models.job import Job, JobStatus
 
+VALID_AF2_INPUT = {
+    "general": {"email": "diego@example.com", "ppmsProject": "my_project", "sampleId": "my_sample"},
+    "sample": {
+        "database": {"database": "full_dbs"},
+        "model": {"model": "monomer"},
+        "sequence": {"sequence": "MKTAYIAKQRQISFVKSHFSRQLEERLGLI"},
+    },
+}
+
 
 async def test_submit_job_success(authed_client, patch_hpc_submit):
     resp = await authed_client.post(
@@ -11,10 +20,7 @@ async def test_submit_job_success(authed_client, patch_hpc_submit):
         json={
             "version": "af2",
             "name": "test job",
-            "input": {
-                "job_type": "monomer",
-                "sequences": [{"id": "A", "sequence": "MKTAYIAKQRQISFVKSHFSRQLEERLGLI"}],
-            },
+            "input": VALID_AF2_INPUT,
         },
     )
     assert resp.status_code == 201
@@ -38,10 +44,7 @@ async def test_submit_job_records_failure_when_sbatch_rejects(authed_client, pat
         json={
             "version": "af2",
             "name": "test job",
-            "input": {
-                "job_type": "monomer",
-                "sequences": [{"id": "A", "sequence": "MKTAYIAKQRQISFVKSHFSRQLEERLGLI"}],
-            },
+            "input": VALID_AF2_INPUT,
         },
     )
     assert resp.status_code == 502
@@ -58,10 +61,7 @@ async def test_get_job_returns_created_job(authed_client):
         json={
             "version": "af2",
             "name": "test job",
-            "input": {
-                "job_type": "monomer",
-                "sequences": [{"id": "A", "sequence": "MKTAYIAKQRQISFVKSHFSRQLEERLGLI"}],
-            },
+            "input": VALID_AF2_INPUT,
         },
     )
     job_id = create_resp.json()["id"]

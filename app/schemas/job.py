@@ -19,6 +19,11 @@ class JobCreate(BaseModel):
     discriminated validation explicit and gives us full control over the
     error response shape rather than relying on a pydantic discriminated
     union (which would require inlining both schemas under a shared field).
+
+    The frontend sends `input` as nested tabs (a tab's own fields and its
+    nested sub-tabs sit as siblings on the same object), e.g. for af2:
+    { "general": {...}, "sample": { "database": {...}, "model": {...},
+    "sequence": {...} } }. See app/schemas/af2.py and app/schemas/common.py.
     """
 
     version: JobVersion

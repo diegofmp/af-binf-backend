@@ -2,6 +2,13 @@
 # submission scripts are finalized. Field names/shapes here are a best-effort
 # approximation of the public AlphaFold3 server/CLI JSON input conventions
 # (entities list with type-specific fields, bonded_atom_pairs, seeds).
+#
+# TODO: the frontend now sends af2 job input as nested tabs, e.g.
+# { "general": {...}, "sample": { "database": {...}, "model": {...}, ... } }
+# (see app/schemas/af2.py). AF3Input still expects the old flat shape below.
+# Once the frontend confirms the nested tab layout for af3, restructure this
+# to `general: GeneralInfo` (reuse from app.schemas.common) + `sample: ...`
+# the same way af2.py does, instead of guessing at the af3 tab names now.
 from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
