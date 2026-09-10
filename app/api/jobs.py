@@ -1,30 +1,32 @@
 import json
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from fastapi.concurrency import run_in_threadpool
 from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth.pull_token import get_job_by_pull_api_key
 from app.auth.session import get_current_user
+from app.config import get_settings
 from app.db import get_db
 from app.hpc import build_slurm_script, remote_workdir_for, submit_slurm_job
 from app.logging import get_logger
 from app.models.job import Job, JobStatus
 from app.models.user import User
-from app.schemas.job import JobCreate, JobRead
+from app.schemas.job import JobCreate, JobCreateResponse, JobRead
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 logger = get_logger(__name__)
 
 
-@router.post("", response_model=JobRead, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=JobCreateResponse, status_code=status.HTTP_201_CREATED)
 async def create_job(
     payload: JobCreate,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-) -> Job:
+) -> JobCreateResponse:
     """Validate `input`, build the AF2/AF3 input JSON + sbatch script, and submit to SLURM over SSH.
 
     Synchronous: the request blocks until `sbatch` accepts (or rejects) the job. There's no queue
@@ -82,8 +84,31 @@ async def create_job(
     await db.commit()
     await db.refresh(job)
 
+    settings = get_settings()
+    pull_url = f"{settings.backend_public_base_url.rstrip('/')}/api/jobs/{job.id}/input.json"
+
     logger.info("jobs.create.ok", job_id=str(job.id), user_id=str(current_user.id), hpc_job_id=hpc_job_id)
-    return job
+    return JobCreateResponse(
+        **JobRead.model_validate(job).model_dump(),
+        input_pull_url=pull_url,
+    )
+
+
+@router.get("/{job_id}/input.json")
+async def download_job_input(job: Job = Depends(get_job_by_pull_api_key)) -> Response:
+    """Serve a job's input JSON for `wget`/`curl` from the HPC side, at any point
+    after submission.
+
+    Auth is the shared `HPC_PULL_API_KEY`, not the SSO session cookie - a compute
+    node can't do an interactive OIDC login, and the pull can happen well after
+    the job was created, so there's no fresh per-job credential to hand out here.
+    """
+    body = json.dumps(job.input_payload, indent=2).encode()
+    return Response(
+        content=body,
+        media_type="application/json",
+        headers={"Content-Disposition": 'attachment; filename="input.json"'},
+    )
 
 
 @router.get("/{job_id}", response_model=JobRead)

@@ -75,3 +75,60 @@ async def test_user_cannot_access_another_users_job(authed_client):
     other_user_job_id = uuid.uuid4()
     resp = await authed_client.get(f"/jobs/{other_user_job_id}")
     assert resp.status_code == 404
+
+
+async def test_input_json_pull_with_valid_api_key(authed_client, client):
+    from app.config import get_settings
+
+    create_resp = await authed_client.post(
+        "/jobs",
+        json={
+            "version": "af2",
+            "name": "test job",
+            "input": VALID_AF2_INPUT,
+        },
+    )
+    body = create_resp.json()
+    assert body["input_pull_url"].endswith(f"/jobs/{body['id']}/input.json")
+
+    # No session cookie needed - only the shared API key, as a compute node would send.
+    api_key = get_settings().hpc_pull_api_key
+    pull_resp = await client.get(
+        f"/jobs/{body['id']}/input.json",
+        headers={"Authorization": f"Bearer {api_key}"},
+    )
+    assert pull_resp.status_code == 200
+    assert pull_resp.json()["sample"]["model"]["model"] == "monomer"
+
+
+async def test_input_json_pull_rejects_missing_key(authed_client, client):
+    create_resp = await authed_client.post(
+        "/jobs",
+        json={
+            "version": "af2",
+            "name": "test job",
+            "input": VALID_AF2_INPUT,
+        },
+    )
+    job_id = create_resp.json()["id"]
+
+    resp = await client.get(f"/jobs/{job_id}/input.json")
+    assert resp.status_code == 401
+
+
+async def test_input_json_pull_rejects_wrong_key(authed_client, client):
+    create_resp = await authed_client.post(
+        "/jobs",
+        json={
+            "version": "af2",
+            "name": "test job",
+            "input": VALID_AF2_INPUT,
+        },
+    )
+    job_id = create_resp.json()["id"]
+
+    resp = await client.get(
+        f"/jobs/{job_id}/input.json",
+        headers={"Authorization": "Bearer wrong-key"},
+    )
+    assert resp.status_code == 401

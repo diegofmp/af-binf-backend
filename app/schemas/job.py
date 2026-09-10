@@ -47,3 +47,12 @@ class JobRead(BaseModel):
     hpc_job_id: str | None
     error_message: str | None
     created_at: datetime
+
+
+class JobCreateResponse(JobRead):
+    """Response for POST /jobs - adds the URL for pulling `input_payload` back as
+    a JSON file from the HPC side (see GET /jobs/{id}/input.json, authenticated
+    with the shared HPC_PULL_API_KEY rather than anything returned here).
+    """
+
+    input_pull_url: str

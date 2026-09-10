@@ -32,6 +32,15 @@ class Settings(BaseSettings):
     oidc_scopes: str = "openid profile email"
     oidc_post_login_redirect: str = "http://localhost:5173/"
 
+    # Base URL the HPC side can reach to pull a job's input JSON over HTTP
+    # (see app.auth.pull_token) - not necessarily the same as any browser-facing URL.
+    backend_public_base_url: str = "http://localhost:8000"
+    # Static, pre-shared credential the HPC side sends as `Authorization: Bearer
+    # <key>` to GET /jobs/{id}/input.json. One key for every job, configured out
+    # of band on both ends - there's no per-job handshake to deliver a token
+    # through, since the pull can happen anytime after submission.
+    hpc_pull_api_key: str = "change-me"
+
     hpc_ssh_host: str = "hpc-login.example.internal"
     hpc_ssh_port: int = 22
     hpc_ssh_username: str = "svc-af-binf"
