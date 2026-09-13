@@ -1,11 +1,6 @@
 # TODO: confirm against actual pipeline input spec once the AF2 HPC-side
 # submission scripts are finalized. Field names/shapes here are a best-effort
 # approximation of common AlphaFold2 (ColabFold/DeepMind) run conventions.
-#
-# TODO: multimer support - the frontend's nested 'sample.sequence' tab only
-# sends a single sequence string today, so only 'monomer' is accepted below.
-# Once the frontend confirms how multiple chains will be represented for
-# multimer jobs, extend SequenceTab/AF2Sample accordingly.
 import re
 from typing import Literal
 
@@ -76,12 +71,6 @@ class AF2Sample(BaseModel):
     msa_options: MSAOptions = Field(default_factory=MSAOptions, alias="msaOptions")
     num_predicted_models: int = Field(default=5, ge=1, le=25, alias="numPredictedModels")
     random_seed: int | None = Field(default=None, ge=0, alias="randomSeed")
-
-    @model_validator(mode="after")
-    def validate_model_supported(self) -> "AF2Sample":
-        if self.model.model != "monomer":
-            raise ValueError("only 'monomer' is currently supported (see multimer TODO in af2.py)")
-        return self
 
 
 class AF2Input(BaseModel):

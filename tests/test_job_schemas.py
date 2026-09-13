@@ -26,9 +26,9 @@ def test_af2_monomer_valid():
     assert payload.sample.database.database == "full_dbs"
 
 
-def test_af2_rejects_multimer_as_not_yet_supported():
-    with pytest.raises(ValidationError):
-        AF2Input(general=GENERAL, sample=_af2_sample(model={"model": "multimer"}))
+def test_af2_accepts_multimer():
+    payload = AF2Input(general=GENERAL, sample=_af2_sample(model={"model": "multimer"}))
+    assert payload.sample.model.model == "multimer"
 
 
 def test_af2_rejects_invalid_sequence_characters():
