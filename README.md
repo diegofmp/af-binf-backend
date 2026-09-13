@@ -23,8 +23,11 @@ app/
   models/       SQLAlchemy models (User, Job)
   schemas/      Pydantic schemas (AF2Input, AF3Input, job/auth request-response)
   api/          auth.py, jobs.py route handlers
-  auth/         oidc.py, session.py (get_current_user), csrf.py
-  hpc.py        sbatch script generation + synchronous SSH submit
+  auth/         oidc.py, session.py (get_current_user), csrf.py,
+                pull_token.py (HPC-side auth for GET /jobs/{id}/input.json)
+  hpc.py        SSH dispatch only - runs the HPC-side script as
+                `<script> <job_id>`; that script pulls the input JSON itself
+                and owns sbatch generation/submission (see Notes/TODOs below)
 alembic/        migrations
 tests/
 docs/auth.md
@@ -40,6 +43,13 @@ Requires Python 3.11+, Docker, and Docker Compose.
    ```bash
    cp .env.example .env
    ```
+
+   `APP_SECRET_KEY`, `DATABASE_URL`, `OIDC_CLIENT_SECRET`, and
+   `HPC_PULL_API_KEY` have no built-in defaults - the app fails fast at
+   startup if any of them is unset, rather than silently running with an
+   insecure placeholder. `.env.example` already fills in working local
+   values for all four; just make sure your `.env` (or whatever injects env
+   vars in a given environment) actually sets them.
 
 2. Bring up the stack (Postgres, Redis, API):
 
@@ -83,6 +93,31 @@ See [.env.example](.env.example) for the full list with comments. Key groups:
   `HPC_DISPATCH_SCRIPT_AF3` (script path run over SSH as `<script> <job_id>`),
   `HPC_PULL_API_KEY`/`BACKEND_PUBLIC_BASE_URL` (lets that script pull the
   job's input JSON back from us).
+
+## Build & deploy
+
+`.github/workflows/build-and-push.yml` builds the image from the `Dockerfile`
+and pushes it to Harbor (`harbor.prod.binf1.boku.ac.at/alphafold/af-binf-backend`)
+on every push to `main` and on `v*` tags, tagged with both the commit SHA and
+`latest`. That's the only artifact CI produces - Postgres and Redis are not
+part of the image; they're external dependencies the target environment must
+already provide, wired up purely through `DATABASE_URL`/`REDIS_URL`.
+
+For a Kubernetes deployment, the backend expects:
+
+- An existing Postgres reachable via `DATABASE_URL` (this repo doesn't run or
+  manage Postgres).
+- A Redis instance for session storage, reachable via `REDIS_URL` - a small,
+  single-replica deployment is enough (session data only, no durability
+  requirement).
+- All other settings from `.env.example` provided as a ConfigMap (plain
+  values) and Secret (`APP_SECRET_KEY`, `DATABASE_URL`, `REDIS_URL`,
+  `OIDC_CLIENT_SECRET`, `HPC_PULL_API_KEY`, `HPC_SSH_PASSWORD`) mounted as
+  env vars - `app/config.py` reads them the same way regardless of source.
+- The HPC SSH private key (`HPC_SSH_PRIVATE_KEY_PATH`), if used instead of a
+  password, mounted from a Secret as a file, not passed as an env var value.
+
+k8s manifests for this aren't in the repo yet.
 
 ## Migrations
 
