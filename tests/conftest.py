@@ -10,6 +10,8 @@ _tmp_root = tempfile.mkdtemp(prefix="af-binf-test-")
 os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{_tmp_root}/test.db"
 os.environ["SESSION_COOKIE_SECURE"] = "false"
 os.environ["APP_SECRET_KEY"] = "test-secret"
+os.environ["OIDC_CLIENT_SECRET"] = "test-oidc-secret"
+os.environ["HPC_PULL_API_KEY"] = "test-pull-key"
 
 import pytest
 import pytest_asyncio

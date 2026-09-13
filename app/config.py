@@ -8,12 +8,16 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     app_env: str = "local"
-    app_secret_key: str = "insecure-dev-key-change-me"
+    # No default: a missing value should fail startup loudly rather than sign
+    # sessions/CSRF tokens with a well-known key.
+    app_secret_key: str
     log_level: str = "INFO"
 
     cors_allowed_origin: str = "http://localhost:5173"
 
-    database_url: str = "postgresql+asyncpg://af_binf:af_binf@localhost:5432/af_binf"
+    # No default: a missing value should fail startup rather than silently
+    # point at the local dev database.
+    database_url: str
 
     redis_url: str = "redis://localhost:6379/0"
 
@@ -27,7 +31,9 @@ class Settings(BaseSettings):
 
     oidc_issuer: str = "https://sso.example.com/realms/example"
     oidc_client_id: str = "af-binf-backend"
-    oidc_client_secret: str = "change-me"
+    # No default: a missing value should fail startup rather than run with a
+    # publicly-known placeholder secret.
+    oidc_client_secret: str
     oidc_redirect_uri: str = "http://localhost:8000/api/auth/callback"
     oidc_scopes: str = "openid profile email"
     oidc_post_login_redirect: str = "http://localhost:5173/"
@@ -39,7 +45,9 @@ class Settings(BaseSettings):
     # <key>` to GET /jobs/{id}/input.json. One key for every job, configured out
     # of band on both ends - there's no per-job handshake to deliver a token
     # through, since the pull can happen anytime after submission.
-    hpc_pull_api_key: str = "change-me"
+    # No default: a missing value should fail startup rather than run with a
+    # publicly-known placeholder key.
+    hpc_pull_api_key: str
 
     hpc_ssh_host: str = "hpc-login.example.internal"
     hpc_ssh_port: int = 22
