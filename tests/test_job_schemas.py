@@ -138,5 +138,5 @@ async def test_submitting_valid_af2_job_creates_submitted_job(authed_client):
     assert body["version"] == "af2"
     assert body["name"] == "my first fold"
     assert body["status"] == "submitted"
-    # the SSH/sbatch call itself is stubbed in tests - see
-    # tests/conftest.py::patch_hpc_submit and test_job_flow.py.
+    # the SSH dispatch call itself is stubbed in tests - see
+    # tests/conftest.py::patch_hpc_dispatch and test_job_flow.py.
