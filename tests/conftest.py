@@ -8,7 +8,6 @@ import uuid
 # vars have to be in place first.
 _tmp_root = tempfile.mkdtemp(prefix="af-binf-test-")
 os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{_tmp_root}/test.db"
-os.environ["HPC_REMOTE_WORKDIR"] = os.path.join(_tmp_root, "hpc-remote")
 os.environ["SESSION_COOKIE_SECURE"] = "false"
 os.environ["APP_SECRET_KEY"] = "test-secret"
 
@@ -46,12 +45,12 @@ async def _patch_redis(fake_redis, monkeypatch):
     yield
 
 
-class _FakeHPCSubmit:
-    """Stub the SSH/sbatch call so tests never touch a real cluster.
+class _FakeHPCDispatch:
+    """Stub the SSH dispatch call so tests never touch a real cluster.
 
-    Records each call so tests can assert on what would have been submitted,
-    and returns a fake SLURM job id. Set `.fail_next = True` to simulate an
-    sbatch failure on the next call.
+    Records each call so tests can assert on what would have been dispatched,
+    and returns fake dispatch-script stdout. Set `.fail_next = True` to
+    simulate the dispatch script failing on the next call.
     """
 
     def __init__(self) -> None:
@@ -59,26 +58,19 @@ class _FakeHPCSubmit:
         self.fail_next = False
         self._counter = itertools.count(1)
 
-    def __call__(self, *, remote_workdir, job_name, script_content, input_content):
-        self.calls.append(
-            {
-                "remote_workdir": remote_workdir,
-                "job_name": job_name,
-                "script_content": script_content,
-                "input_content": input_content,
-            }
-        )
+    def __call__(self, job):
+        self.calls.append({"job_id": job.id, "version": job.version})
         if self.fail_next:
             self.fail_next = False
-            raise RuntimeError("simulated sbatch failure")
-        return f"fake-{next(self._counter)}"
+            raise RuntimeError("simulated dispatch failure")
+        return f"dispatched fake-{next(self._counter)}"
 
 
 @pytest.fixture(autouse=True)
-def patch_hpc_submit(monkeypatch):
-    fake_submit = _FakeHPCSubmit()
-    monkeypatch.setattr(jobs_module, "submit_slurm_job", fake_submit)
-    return fake_submit
+def patch_hpc_dispatch(monkeypatch):
+    fake_dispatch = _FakeHPCDispatch()
+    monkeypatch.setattr(jobs_module, "dispatch_job", fake_dispatch)
+    return fake_dispatch
 
 
 @pytest_asyncio.fixture

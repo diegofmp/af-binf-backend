@@ -79,8 +79,10 @@ See [.env.example](.env.example) for the full list with comments. Key groups:
 - **OIDC**: `OIDC_ISSUER`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`,
   `OIDC_REDIRECT_URI`, `OIDC_SCOPES`, `OIDC_POST_LOGIN_REDIRECT` — point these
   at your actual SSO provider; nothing about a specific IdP is hardcoded.
-- **HPC**: `HPC_SSH_*`, `HPC_REMOTE_WORKDIR`, `HPC_SLURM_PARTITION`/
-  `HPC_SLURM_ACCOUNT`.
+- **HPC**: `HPC_SSH_*` (connection), `HPC_DISPATCH_SCRIPT_AF2`/
+  `HPC_DISPATCH_SCRIPT_AF3` (script path run over SSH as `<script> <job_id>`),
+  `HPC_PULL_API_KEY`/`BACKEND_PUBLIC_BASE_URL` (lets that script pull the
+  job's input JSON back from us).
 
 ## Migrations
 
@@ -98,8 +100,8 @@ pytest
 ```
 
 Tests use an in-memory SQLite DB (via `aiosqlite`) and a fake Redis (via
-`fakeredis`) for sessions. The SSH/`sbatch` call itself is monkeypatched
-(see `tests/conftest.py::patch_hpc_submit`) — no external services or real
+`fakeredis`) for sessions. The SSH dispatch call itself is monkeypatched
+(see `tests/conftest.py::patch_hpc_dispatch`) — no external services or real
 cluster access required. Coverage includes: the session/`get_current_user`
 dependency, AF2/AF3 input validation (accepting valid payloads, rejecting
 malformed ones), and the submit request/response flow (success + failure).
@@ -110,11 +112,13 @@ malformed ones), and the submit request/response flow (success + failure).
   approximations of AlphaFold2/3 input conventions — marked `# TODO: confirm
   against actual pipeline input spec` pending the finalized HPC-side
   pipeline scripts.
-- The SLURM `sbatch` script template in `app/hpc.py::build_slurm_script` is a
-  placeholder — swap in the real pipeline invocation once available.
+- Our responsibility ends at dispatch: `app/hpc.py::dispatch_job` SSHes in
+  and runs the HPC-side script (`HPC_DISPATCH_SCRIPT_AF2`/`_AF3`) with the
+  job id as its only argument. That script pulls the input JSON itself (GET
+  `/api/jobs/{id}/input.json`), parses it, and builds/submits the `sbatch`
+  job — none of that lives in this repo.
 - `app/hpc.py` opens a fresh SSH connection per request and blocks the
-  request until `sbatch` returns. This is the known limitation to fix next:
-  submission should move off the request path onto a queue (Celery) with a
-  background worker polling job status, fetching results, and retrying —
-  not something a user's browser tab should wait on or need to stay open
-  for.
+  request until the dispatch script returns. This is the known limitation to
+  fix next: dispatch should move off the request path onto a queue (Celery)
+  with a background worker retrying on transient SSH failures — not
+  something a user's browser tab should wait on or need to stay open for.

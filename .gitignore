@@ -10,3 +10,4 @@ data/
 dist/
 build/
 docker/hpc-mock/
+docker-compose.override.yml

@@ -46,9 +46,14 @@ class Settings(BaseSettings):
     hpc_ssh_username: str = "svc-af-binf"
     hpc_ssh_private_key_path: str | None = None
     hpc_ssh_password: str | None = None
-    hpc_remote_workdir: str = "/scratch/af-binf-jobs"
-    hpc_slurm_partition: str = "gpu"
-    hpc_slurm_account: str | None = None
+
+    # Absolute path, on the HPC side, of the script we invoke over SSH as
+    # `<script> <job_id>` to dispatch a job. One per pipeline version, since
+    # af2/af3 need different HPC-side entrypoints. Everything past that point
+    # (pulling the input JSON, parsing it, building/submitting the sbatch
+    # script) is the script's responsibility, not ours.
+    hpc_dispatch_script_af2: str = "/opt/af-binf/dispatch_af2.sh"
+    hpc_dispatch_script_af3: str = "/opt/af-binf/dispatch_af3.sh"
 
     @property
     def oidc_scopes_list(self) -> list[str]:

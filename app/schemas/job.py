@@ -42,11 +42,16 @@ class JobRead(BaseModel):
     id: uuid.UUID
     version: JobVersion
     name: str
+    sample_id: str | None
     status: JobStatus
     input_payload: dict[str, Any]
+    # Stdout of the HPC-side dispatch script, not a SLURM job id - dispatch is
+    # synchronous but the eventual `sbatch` submission happens on the HPC side,
+    # out of our view. See app.hpc.dispatch_job.
     hpc_job_id: str | None
     error_message: str | None
     created_at: datetime
+    updated_at: datetime
 
 
 class JobCreateResponse(JobRead):
@@ -56,3 +61,35 @@ class JobCreateResponse(JobRead):
     """
 
     input_pull_url: str
+
+
+class JobValidateResponse(BaseModel):
+    """Response for POST /jobs/validate - no job is created, so there's no id/status
+    to return. `normalized_input` is the input as `JobCreate.validated_input()`
+    produced it (defaults filled in, values coerced), for the frontend to compare
+    against what it sent if useful.
+    """
+
+    valid: bool = True
+    normalized_input: dict[str, Any]
+
+
+class JobListItem(BaseModel):
+    """One row of GET /jobs - just enough for a submissions list, not the full
+    (and much heavier) input_payload that JobRead carries.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    sample_id: str | None
+    status: JobStatus
+    created_at: datetime
+    updated_at: datetime
+
+
+class JobListResponse(BaseModel):
+    items: list[JobListItem]
+    total: int
+    page: int
+    page_size: int

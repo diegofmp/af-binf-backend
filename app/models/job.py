@@ -48,6 +48,11 @@ class Job(Base):
         nullable=False,
     )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
+    # Denormalized from validated_input.general.sample_id (see app.api.jobs.create_job),
+    # same as `name` above, so the submissions list can show/sort/filter on it without
+    # unpacking input_payload per row. Nullable: af3 inputs don't have a `general` block
+    # yet (see app.schemas.af3's TODO), so it's None there for now.
+    sample_id: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
     status: Mapped[JobStatus] = mapped_column(
         Enum(
             JobStatus,
@@ -63,11 +68,18 @@ class Job(Base):
 
     input_payload: Mapped[dict[str, Any]] = mapped_column(_JSONVariant, nullable=False)
 
-    hpc_job_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Stdout of the HPC-side dispatch script (see app.hpc.dispatch_job), not a
+    # SLURM job id - we have no synchronous visibility into the eventual
+    # `sbatch` submission, which happens entirely on the HPC side. Text, not a
+    # short String, since script stdout isn't bounded the way a job id was.
+    hpc_job_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
     )
 
     user: Mapped["User"] = relationship(back_populates="jobs")
