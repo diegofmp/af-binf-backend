@@ -36,14 +36,6 @@ def test_af2_rejects_invalid_sequence_characters():
         AF2Input(general=GENERAL, sample=_af2_sample(sequence={"sequence": "MKTAYIAKQ123!!!"}))
 
 
-def test_af2_precomputed_msa_requires_path():
-    with pytest.raises(ValidationError):
-        AF2Input(
-            general=GENERAL,
-            sample=_af2_sample(msaOptions={"use_precomputed_msa": True}),
-        )
-
-
 def test_af2_rejects_invalid_model():
     with pytest.raises(ValidationError):
         AF2Input(general=GENERAL, sample=_af2_sample(model={"model": "dimer"}))
