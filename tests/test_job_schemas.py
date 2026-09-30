@@ -36,6 +36,49 @@ def test_af2_rejects_invalid_sequence_characters():
         AF2Input(general=GENERAL, sample=_af2_sample(sequence={"sequence": "MKTAYIAKQ123!!!"}))
 
 
+@pytest.mark.parametrize("sequence", ["MKTAYXAKQ", "MKTAYBAKQ", "MKTAY*", ">chain_A\nMKTAYIAKQ"])
+def test_af2_rejects_non_standard_residues_and_fasta_headers(sequence):
+    with pytest.raises(ValidationError):
+        AF2Input(general=GENERAL, sample=_af2_sample(sequence={"sequence": sequence}))
+
+
+def test_af2_sequence_whitespace_is_removed_and_upper_cased():
+    payload = AF2Input(
+        general=GENERAL, sample=_af2_sample(sequence={"sequence": " mktay iakq\r\nRQIS\t"})
+    )
+    assert payload.sample.sequence.sequence == "MKTAYIAKQRQIS"
+
+
+def test_af2_ppms_project_is_optional():
+    general = {k: v for k, v in GENERAL.items() if k != "ppmsProject"}
+    assert AF2Input(general=general, sample=_af2_sample()).general.ppms_project is None
+    general["ppmsProject"] = ""
+    assert AF2Input(general=general, sample=_af2_sample()).general.ppms_project == ""
+
+
+@pytest.mark.parametrize("email", ["not-an-email", "a@b", "a b@example.com", "@example.com"])
+def test_af2_rejects_invalid_email(email):
+    with pytest.raises(ValidationError):
+        AF2Input(general={**GENERAL, "email": email}, sample=_af2_sample())
+
+
+def test_af2_email_is_stripped():
+    payload = AF2Input(general={**GENERAL, "email": " diego@example.com "}, sample=_af2_sample())
+    assert payload.general.email == "diego@example.com"
+
+
+@pytest.mark.parametrize("sample_id", ["   ", "it's", 'a"b', "a\\b", "-sample", "a" * 65, "a\x00b"])
+def test_af2_rejects_invalid_sample_id(sample_id):
+    with pytest.raises(ValidationError):
+        AF2Input(general={**GENERAL, "sampleId": sample_id}, sample=_af2_sample())
+
+
+def test_af2_sample_id_whitespace_is_collapsed():
+    payload = AF2Input(general={**GENERAL, "sampleId": "  my\n sample\t 1 "}, sample=_af2_sample())
+    assert payload.general.sample_id == "my sample 1"
+    assert AF2Input(general={**GENERAL, "sampleId": "a" * 64}, sample=_af2_sample())
+
+
 def test_af2_rejects_invalid_model():
     with pytest.raises(ValidationError):
         AF2Input(general=GENERAL, sample=_af2_sample(model={"model": "dimer"}))

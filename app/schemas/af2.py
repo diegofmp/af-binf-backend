@@ -8,7 +8,9 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.schemas.common import GeneralInfo
 
-_SEQUENCE_RE = re.compile(r"^[ACDEFGHIKLMNPQRSTVWYXBZJUO*\n\r]+$", re.IGNORECASE)
+# The 20 standard amino acids. Same rule as the HPC side (AF2/validate_input.py
+# in af2_automatic_backend), which has the last word on what it can run.
+_AMINO_ACIDS = set("ACDEFGHIKLMNPQRSTVWY")
 
 DatabasePreset = Literal["full_dbs", "reduced_dbs"]
 ModelPreset = Literal["monomer", "multimer", "monomer_casp14", "monomer_ptm"]
@@ -28,11 +30,18 @@ class SequenceTab(BaseModel):
     @field_validator("sequence")
     @classmethod
     def validate_sequence(cls, v: str) -> str:
-        cleaned = v.strip().upper()
+        # Whitespace (line breaks, spaces) is dropped, as the HPC side does.
+        cleaned = re.sub(r"\s+", "", v).upper()
         if not cleaned:
             raise ValueError("sequence must not be empty")
-        if not _SEQUENCE_RE.match(cleaned):
-            raise ValueError("sequence contains characters outside the standard amino acid alphabet")
+        if cleaned.startswith(">"):
+            raise ValueError("must contain only the sequence, without a FASTA header ('>...')")
+        invalid = sorted(set(cleaned) - _AMINO_ACIDS)
+        if invalid:
+            raise ValueError(
+                f"contains invalid characters: {' '.join(invalid)} "
+                "(only the 20 standard amino acids are allowed)"
+            )
         return cleaned
 
 
