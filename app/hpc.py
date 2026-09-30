@@ -51,7 +51,7 @@ def _run(client: paramiko.SSHClient, command: str) -> tuple[int, str, str]:
 
 
 def dispatch_job(job: Job) -> str:
-    """Run the HPC-side dispatch script for `job` over SSH: `<script> <job_id>`.
+    """Run the HPC-side dispatch script for `job` over SSH: `bash <script> <job_id>`.
 
     Blocking (uses paramiko directly) - call this off the event loop, e.g. via
     `fastapi.concurrency.run_in_threadpool`.
@@ -65,7 +65,7 @@ def dispatch_job(job: Job) -> str:
     Returns the script's stdout (stripped), for reference/debugging.
     """
     script_path = dispatch_script_for(job.version)
-    command = f"{shlex.quote(script_path)} {shlex.quote(str(job.id))}"
+    command = f"bash {shlex.quote(script_path)} {shlex.quote(str(job.id))}"
 
     with _connection() as client:
         exit_code, out, err = _run(client, command)
