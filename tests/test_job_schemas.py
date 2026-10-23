@@ -11,12 +11,14 @@ def _af2_sample(**overrides):
     sample = {
         "database": {"database": "full_dbs"},
         "model": {"model": "monomer"},
-        "sequence": {
-            "sequence": "MKTAYIAKQRQISFVKSHFSRQLEERLGLIEVQAPILSRVGDGTQDNLSGAEKAVQVKVKALPDAQFEVVHSLAKWKR"
-        },
+        "sequence": {"sequences": [SEQUENCE]},
     }
     sample.update(overrides)
     return sample
+
+
+SEQUENCE = "MKTAYIAKQRQISFVKSHFSRQLEERLGLIEVQAPILSRVGDGTQDNLSGAEKAVQVKVKALPDAQFEVVHSLAKWKR"
+MULTIMER = {"model": "multimer"}
 
 
 def test_af2_monomer_valid():
@@ -27,26 +29,76 @@ def test_af2_monomer_valid():
 
 
 def test_af2_accepts_multimer():
-    payload = AF2Input(general=GENERAL, sample=_af2_sample(model={"model": "multimer"}))
+    payload = AF2Input(
+        general=GENERAL,
+        sample=_af2_sample(model=MULTIMER, sequence={"sequences": [SEQUENCE, SEQUENCE]}),
+    )
     assert payload.sample.model.model == "multimer"
+
+
+def test_af2_rejects_multimer_with_one_sequence():
+    with pytest.raises(ValidationError, match="at least two sequences"):
+        AF2Input(general=GENERAL, sample=_af2_sample(model=MULTIMER))
 
 
 def test_af2_rejects_invalid_sequence_characters():
     with pytest.raises(ValidationError):
-        AF2Input(general=GENERAL, sample=_af2_sample(sequence={"sequence": "MKTAYIAKQ123!!!"}))
+        AF2Input(general=GENERAL, sample=_af2_sample(sequence={"sequences": ["MKTAYIAKQ123!!!"]}))
 
 
 @pytest.mark.parametrize("sequence", ["MKTAYXAKQ", "MKTAYBAKQ", "MKTAY*", ">chain_A\nMKTAYIAKQ"])
 def test_af2_rejects_non_standard_residues_and_fasta_headers(sequence):
     with pytest.raises(ValidationError):
-        AF2Input(general=GENERAL, sample=_af2_sample(sequence={"sequence": sequence}))
+        AF2Input(general=GENERAL, sample=_af2_sample(sequence={"sequences": [sequence]}))
 
 
 def test_af2_sequence_whitespace_is_removed_and_upper_cased():
     payload = AF2Input(
-        general=GENERAL, sample=_af2_sample(sequence={"sequence": " mktay iakq\r\nRQIS\t"})
+        general=GENERAL, sample=_af2_sample(sequence={"sequences": [" mktay iakq\r\nRQIS\t"]})
     )
-    assert payload.sample.sequence.sequence == "MKTAYIAKQRQIS"
+    assert payload.sample.sequence.sequences == ["MKTAYIAKQRQIS"]
+
+
+def test_af2_sequence_length_limits_are_inclusive():
+    for sequence in ("A" * 4, "A" * 2500):
+        assert AF2Input(general=GENERAL, sample=_af2_sample(sequence={"sequences": [sequence]}))
+
+
+@pytest.mark.parametrize("sequence", ["AAA", "A" * 2501])
+def test_af2_rejects_sequence_too_short_or_too_long(sequence):
+    with pytest.raises(ValidationError):
+        AF2Input(general=GENERAL, sample=_af2_sample(sequence={"sequences": [sequence]}))
+
+
+def test_af2_multimer_accepts_up_to_six_sequences():
+    payload = AF2Input(
+        general=GENERAL, sample=_af2_sample(model=MULTIMER, sequence={"sequences": [SEQUENCE] * 6})
+    )
+    assert len(payload.sample.sequence.sequences) == 6
+
+
+@pytest.mark.parametrize("sequences", [[], [SEQUENCE] * 7])
+def test_af2_rejects_no_or_too_many_sequences(sequences):
+    with pytest.raises(ValidationError):
+        AF2Input(general=GENERAL, sample=_af2_sample(model=MULTIMER, sequence={"sequences": sequences}))
+
+
+def test_af2_rejects_invalid_sequence_among_several():
+    with pytest.raises(ValidationError, match="sequence 2"):
+        AF2Input(
+            general=GENERAL,
+            sample=_af2_sample(model=MULTIMER, sequence={"sequences": [SEQUENCE, "MKT1"]}),
+        )
+
+
+def test_af2_rejects_several_sequences_without_multimer():
+    with pytest.raises(ValidationError, match="multimer"):
+        AF2Input(general=GENERAL, sample=_af2_sample(sequence={"sequences": [SEQUENCE, SEQUENCE]}))
+
+
+def test_af2_rejects_plain_string_sequence():
+    with pytest.raises(ValidationError):
+        AF2Input(general=GENERAL, sample=_af2_sample(sequence={"sequences": SEQUENCE}))
 
 
 def test_af2_ppms_project_is_optional():
@@ -141,7 +193,7 @@ async def test_submitting_af2_job_with_malformed_input_is_rejected(authed_client
         json={
             "version": "af2",
             "name": "bad job",
-            "input": {"general": GENERAL, "sample": _af2_sample(sequence={"sequence": ""})},
+            "input": {"general": GENERAL, "sample": _af2_sample(sequence={"sequences": [""]})},
         },
     )
     assert resp.status_code == 422

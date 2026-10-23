@@ -10,7 +10,7 @@ VALID_AF2_INPUT = {
     "sample": {
         "database": {"database": "full_dbs"},
         "model": {"model": "monomer"},
-        "sequence": {"sequence": "MKTAYIAKQRQISFVKSHFSRQLEERLGLI"},
+        "sequence": {"sequences": ["MKTAYIAKQRQISFVKSHFSRQLEERLGLI"]},
     },
 }
 
