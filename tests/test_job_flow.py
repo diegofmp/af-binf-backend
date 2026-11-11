@@ -101,10 +101,31 @@ async def test_get_job_returns_created_job(authed_client):
     assert get_resp.json()["id"] == job_id
 
 
-async def test_user_cannot_access_another_users_job(authed_client):
-    other_user_job_id = uuid.uuid4()
-    resp = await authed_client.get(f"/jobs/{other_user_job_id}")
+async def test_unknown_job_is_not_found(authed_client):
+    resp = await authed_client.get(f"/jobs/{uuid.uuid4()}")
     assert resp.status_code == 404
+
+
+async def test_user_cannot_access_another_users_job(authed_client, db_session):
+    other_user = User(sso_subject="sub-other", email="other@example.com", display_name="Other")
+    db_session.add(other_user)
+    await db_session.commit()
+    await db_session.refresh(other_user)
+    other_job = Job(
+        user_id=other_user.id,
+        version=JobVersion.AF2,
+        name="not mine",
+        status=JobStatus.SUBMITTED,
+        input_payload=VALID_AF2_INPUT,
+    )
+    db_session.add(other_job)
+    await db_session.commit()
+    await db_session.refresh(other_job)
+
+    resp = await authed_client.get(f"/jobs/{other_job.id}")
+    # 404, not 403: the same answer as for an unknown id, so ids can't be probed.
+    assert resp.status_code == 404
+    assert "my_sample" not in resp.text
 
 
 async def test_input_json_pull_with_valid_api_key(authed_client, client):
