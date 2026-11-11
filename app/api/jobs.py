@@ -1,5 +1,7 @@
 import json
+import math
 import uuid
+from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from fastapi.concurrency import run_in_threadpool
@@ -47,6 +49,65 @@ def _validated_input(payload: JobCreate) -> AF2Input | AF3Input:
         ) from exc
 
 
+async def _quota_usage(
+    db: AsyncSession, user: User, now: datetime
+) -> tuple[int, datetime | None]:
+    """How many of `user`'s jobs count against the quota right now, and when
+    the earliest of them leaves the rolling window (freeing a slot) - None if
+    none count. Only `submitted` jobs count; failed dispatches never reached
+    the cluster.
+    """
+    window = timedelta(hours=get_settings().job_quota_window_hours)
+    used, oldest = (
+        await db.execute(
+            select(func.count(), func.min(Job.created_at)).where(
+                Job.user_id == user.id,
+                Job.status == JobStatus.SUBMITTED,
+                Job.created_at >= now - window,
+            )
+        )
+    ).one()
+    if oldest is None:
+        return used, None
+    if oldest.tzinfo is None:  # SQLite hands back naive datetimes; they're UTC
+        oldest = oldest.replace(tzinfo=UTC)
+    return used, oldest + window
+
+
+async def _enforce_submission_quota(db: AsyncSession, user: User) -> None:
+    """Reject with 429 if `user` already has the max number of submitted jobs
+    in the rolling quota window.
+
+    Locks the user's row first so two concurrent submissions from the same
+    user can't both see "4 of 5" and both get through; the lock is held until
+    the caller's commit of the new job (before dispatch, so not across SSH).
+    SQLite (tests) ignores FOR UPDATE, which is fine there.
+    """
+    settings = get_settings()
+    limit = settings.job_quota_max_submissions
+    if limit == 0:
+        return
+
+    await db.execute(select(User.id).where(User.id == user.id).with_for_update())
+
+    now = datetime.now(UTC)
+    used, next_slot_at = await _quota_usage(db, user, now)
+    if used < limit:
+        return
+
+    retry_after = max(1, math.ceil((next_slot_at - now).total_seconds()))
+
+    logger.info("jobs.create.quota_exceeded", user_id=str(user.id), count=used, limit=limit)
+    raise HTTPException(
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        detail=(
+            f"submission limit reached: at most {limit} jobs per "
+            f"{settings.job_quota_window_hours}h"
+        ),
+        headers={"Retry-After": str(retry_after)},
+    )
+
+
 @router.post("/validate", response_model=JobValidateResponse)
 async def validate_job(
     payload: JobCreate,
@@ -80,6 +141,7 @@ async def create_job(
     have no visibility into the eventual SLURM outcome here.
     """
     validated_input = _validated_input(payload)
+    await _enforce_submission_quota(db, current_user)
 
     # af3 inputs don't have a `general` block yet (see app.schemas.af3's TODO),
     # so this is None there for now.

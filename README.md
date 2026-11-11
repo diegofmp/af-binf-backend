@@ -93,6 +93,10 @@ See [.env.example](.env.example) for the full list with comments. Key groups:
   `HPC_DISPATCH_SCRIPT_AF3` (script path run over SSH as `<script> <job_id>`),
   `HPC_PULL_API_KEY`/`BACKEND_PUBLIC_BASE_URL` (lets that script pull the
   job's input JSON back from us).
+- **Quota**: `JOB_QUOTA_MAX_SUBMISSIONS` (default 5, `0` disables) per user
+  per rolling `JOB_QUOTA_WINDOW_HOURS` (default 24). Over the limit, `POST
+  /jobs` returns 429 with a `Retry-After` header (seconds); failed
+  dispatches don't count.
 
 ## Build & deploy
 

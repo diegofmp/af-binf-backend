@@ -1,6 +1,7 @@
 from functools import lru_cache
 from typing import Literal
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -62,6 +63,13 @@ class Settings(BaseSettings):
     # script) is the script's responsibility, not ours.
     hpc_dispatch_script_af2: str = "/opt/af-binf/dispatch_af2.sh"
     hpc_dispatch_script_af3: str = "/opt/af-binf/dispatch_af3.sh"
+
+    # Per-user submission quota: at most `job_quota_max_submissions` successfully
+    # dispatched jobs in any rolling `job_quota_window_hours` window. Failed
+    # dispatches don't count (they never reached the cluster). 0 disables the
+    # limit.
+    job_quota_max_submissions: int = Field(default=5, ge=0)
+    job_quota_window_hours: int = Field(default=24, ge=1)
 
     @property
     def oidc_scopes_list(self) -> list[str]:

@@ -1,4 +1,5 @@
 import uuid
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
 
@@ -235,3 +236,83 @@ async def test_input_json_pull_rejects_wrong_key(authed_client, client):
         headers={"Authorization": "Bearer wrong-key"},
     )
     assert resp.status_code == 401
+
+
+def _job_for(user_id, *, created_at=None, status=JobStatus.SUBMITTED, name="seeded"):
+    job = Job(
+        user_id=user_id,
+        version=JobVersion.AF2,
+        name=name,
+        status=status,
+        input_payload=VALID_AF2_INPUT,
+    )
+    if created_at is not None:
+        job.created_at = created_at
+    return job
+
+
+async def test_submission_quota_rejects_over_limit(authed_client, patch_hpc_dispatch):
+    from app.config import get_settings
+
+    limit = get_settings().job_quota_max_submissions
+    for i in range(limit):
+        resp = await authed_client.post(
+            "/jobs", json={"version": "af2", "name": f"job {i}", "input": VALID_AF2_INPUT}
+        )
+        assert resp.status_code == 201
+
+    resp = await authed_client.post(
+        "/jobs", json={"version": "af2", "name": "one too many", "input": VALID_AF2_INPUT}
+    )
+    assert resp.status_code == 429
+    assert "submission limit reached" in resp.json()["detail"]
+    retry_after = int(resp.headers["Retry-After"])
+    assert 0 < retry_after <= get_settings().job_quota_window_hours * 3600
+    # Rejected before anything was recorded or dispatched.
+    assert len(patch_hpc_dispatch.calls) == limit
+
+
+async def test_submission_quota_ignores_failed_old_and_other_users_jobs(
+    authed_client, test_user, db_session, monkeypatch
+):
+    from app.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "job_quota_max_submissions", 2)
+
+    other_user = User(sso_subject="sub-other", email="other@example.com", display_name="Other")
+    db_session.add(other_user)
+    await db_session.commit()
+    long_ago = datetime.now(UTC) - timedelta(hours=get_settings().job_quota_window_hours + 1)
+    db_session.add_all(
+        [
+            _job_for(test_user.id, status=JobStatus.FAILED),
+            _job_for(test_user.id, status=JobStatus.FAILED),
+            _job_for(test_user.id, created_at=long_ago),
+            _job_for(test_user.id, created_at=long_ago),
+            _job_for(other_user.id),
+            _job_for(other_user.id),
+        ]
+    )
+    await db_session.commit()
+
+    for i in range(2):
+        resp = await authed_client.post(
+            "/jobs", json={"version": "af2", "name": f"job {i}", "input": VALID_AF2_INPUT}
+        )
+        assert resp.status_code == 201
+
+    resp = await authed_client.post(
+        "/jobs", json={"version": "af2", "name": "job 3", "input": VALID_AF2_INPUT}
+    )
+    assert resp.status_code == 429
+
+
+async def test_submission_quota_zero_disables_limit(authed_client, monkeypatch):
+    from app.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "job_quota_max_submissions", 0)
+    for i in range(7):
+        resp = await authed_client.post(
+            "/jobs", json={"version": "af2", "name": f"job {i}", "input": VALID_AF2_INPUT}
+        )
+        assert resp.status_code == 201
