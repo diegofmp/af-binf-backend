@@ -1,4 +1,5 @@
 import shlex
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 
@@ -50,6 +51,17 @@ def _run(client: paramiko.SSHClient, command: str) -> tuple[int, str, str]:
     return exit_code, stdout.read().decode(), stderr.read().decode()
 
 
+def _fake_dispatch(job: Job) -> str:
+    """Stand-in for a real dispatch, for local/internal testing without cluster
+    access: wait `hpc_fake_dispatch_delay_seconds` (so the frontend's
+    "submitting..." state is visible) and report success. The job is never run.
+    """
+    delay = get_settings().hpc_fake_dispatch_delay_seconds
+    logger.warning("hpc.dispatch.fake", job_id=str(job.id), delay_seconds=delay)
+    time.sleep(delay)
+    return f"FAKE dispatch (HPC_DISPATCH_MODE=fake), job {job.id} was not sent to the cluster"
+
+
 def dispatch_job(job: Job) -> str:
     """Run the HPC-side dispatch script for `job` over SSH: `bash <script> <job_id>`.
 
@@ -63,7 +75,12 @@ def dispatch_job(job: Job) -> str:
     we have no synchronous visibility into here.
 
     Returns the script's stdout (stripped), for reference/debugging.
+
+    With HPC_DISPATCH_MODE=fake, nothing is contacted: see `_fake_dispatch`.
     """
+    if get_settings().hpc_dispatch_mode == "fake":
+        return _fake_dispatch(job)
+
     script_path = dispatch_script_for(job.version)
     command = f"bash {shlex.quote(script_path)} {shlex.quote(str(job.id))}"
 

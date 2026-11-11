@@ -1,7 +1,7 @@
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -64,12 +64,26 @@ class Settings(BaseSettings):
     hpc_dispatch_script_af2: str = "/opt/af-binf/dispatch_af2.sh"
     hpc_dispatch_script_af3: str = "/opt/af-binf/dispatch_af3.sh"
 
+    # "fake" skips SSH entirely: dispatch just sleeps for
+    # `hpc_fake_dispatch_delay_seconds` and reports success, so the submit flow
+    # can be exercised locally without reaching the cluster. Jobs end up
+    # `submitted` (and count toward the quota) but never run. Refused when
+    # APP_ENV=production.
+    hpc_dispatch_mode: Literal["ssh", "fake"] = "ssh"
+    hpc_fake_dispatch_delay_seconds: float = Field(default=3.0, ge=0)
+
     # Per-user submission quota: at most `job_quota_max_submissions` successfully
     # dispatched jobs in any rolling `job_quota_window_hours` window. Failed
     # dispatches don't count (they never reached the cluster). 0 disables the
     # limit.
     job_quota_max_submissions: int = Field(default=5, ge=0)
     job_quota_window_hours: int = Field(default=24, ge=1)
+
+    @model_validator(mode="after")
+    def _no_fake_dispatch_in_production(self) -> "Settings":
+        if self.hpc_dispatch_mode == "fake" and self.app_env == "production":
+            raise ValueError("HPC_DISPATCH_MODE=fake is not allowed with APP_ENV=production")
+        return self
 
     @property
     def oidc_scopes_list(self) -> list[str]:

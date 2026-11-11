@@ -92,7 +92,9 @@ See [.env.example](.env.example) for the full list with comments. Key groups:
 - **HPC**: `HPC_SSH_*` (connection), `HPC_DISPATCH_SCRIPT_AF2`/
   `HPC_DISPATCH_SCRIPT_AF3` (script path run over SSH as `<script> <job_id>`),
   `HPC_PULL_API_KEY`/`BACKEND_PUBLIC_BASE_URL` (lets that script pull the
-  job's input JSON back from us).
+  job's input JSON back from us). For local testing without cluster access,
+  `HPC_DISPATCH_MODE=fake` skips SSH and reports success after
+  `HPC_FAKE_DISPATCH_DELAY_SECONDS` (refused when `APP_ENV=production`).
 - **Quota**: `JOB_QUOTA_MAX_SUBMISSIONS` (default 5, `0` disables) per user
   per rolling `JOB_QUOTA_WINDOW_HOURS` (default 24). Over the limit, `POST
   /jobs` returns 429 with a `Retry-After` header (seconds); failed
