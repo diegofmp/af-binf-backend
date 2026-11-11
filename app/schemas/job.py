@@ -93,3 +93,19 @@ class JobListResponse(BaseModel):
     total: int
     page: int
     page_size: int
+
+
+class JobQuotaResponse(BaseModel):
+    """Response for GET /jobs/quota - the current user's rolling submission quota.
+
+    `limit`, `remaining` and `next_slot_at` are null when the quota is disabled
+    (JOB_QUOTA_MAX_SUBMISSIONS=0). `next_slot_at` is when the oldest job still
+    counted leaves the window and frees a slot (null if nothing is counted);
+    when `remaining` is 0, it's the earliest time the user can submit again.
+    """
+
+    limit: int | None
+    window_hours: int
+    used: int
+    remaining: int | None
+    next_slot_at: datetime | None

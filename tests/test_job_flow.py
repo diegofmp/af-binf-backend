@@ -316,3 +316,71 @@ async def test_submission_quota_zero_disables_limit(authed_client, monkeypatch):
             "/jobs", json={"version": "af2", "name": f"job {i}", "input": VALID_AF2_INPUT}
         )
         assert resp.status_code == 201
+
+
+async def test_quota_endpoint_for_new_user(authed_client):
+    from app.config import get_settings
+
+    resp = await authed_client.get("/jobs/quota")
+    assert resp.status_code == 200
+    settings = get_settings()
+    assert resp.json() == {
+        "limit": settings.job_quota_max_submissions,
+        "window_hours": settings.job_quota_window_hours,
+        "used": 0,
+        "remaining": settings.job_quota_max_submissions,
+        "next_slot_at": None,
+    }
+
+
+async def test_quota_endpoint_tracks_usage_and_next_slot(authed_client, monkeypatch):
+    from app.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "job_quota_max_submissions", 2)
+    window = timedelta(hours=get_settings().job_quota_window_hours)
+
+    first = await authed_client.post(
+        "/jobs", json={"version": "af2", "name": "job 0", "input": VALID_AF2_INPUT}
+    )
+    first_created = datetime.fromisoformat(first.json()["created_at"])
+    if first_created.tzinfo is None:
+        first_created = first_created.replace(tzinfo=UTC)
+
+    body = (await authed_client.get("/jobs/quota")).json()
+    assert body["used"] == 1
+    assert body["remaining"] == 1
+    assert datetime.fromisoformat(body["next_slot_at"]) == first_created + window
+
+    await authed_client.post(
+        "/jobs", json={"version": "af2", "name": "job 1", "input": VALID_AF2_INPUT}
+    )
+    body = (await authed_client.get("/jobs/quota")).json()
+    assert body["used"] == 2
+    assert body["remaining"] == 0
+
+    # The 429's Retry-After points at the same moment as next_slot_at.
+    rejected = await authed_client.post(
+        "/jobs", json={"version": "af2", "name": "job 2", "input": VALID_AF2_INPUT}
+    )
+    assert rejected.status_code == 429
+    retry_at = datetime.now(UTC) + timedelta(seconds=int(rejected.headers["Retry-After"]))
+    assert abs(retry_at - datetime.fromisoformat(body["next_slot_at"])) < timedelta(seconds=5)
+
+
+async def test_quota_endpoint_when_disabled(authed_client, monkeypatch):
+    from app.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "job_quota_max_submissions", 0)
+    await authed_client.post(
+        "/jobs", json={"version": "af2", "name": "job", "input": VALID_AF2_INPUT}
+    )
+    body = (await authed_client.get("/jobs/quota")).json()
+    assert body["limit"] is None
+    assert body["remaining"] is None
+    assert body["next_slot_at"] is None
+    assert body["used"] == 1
+
+
+async def test_quota_endpoint_requires_authentication(client):
+    resp = await client.get("/jobs/quota")
+    assert resp.status_code == 401

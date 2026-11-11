@@ -96,7 +96,8 @@ See [.env.example](.env.example) for the full list with comments. Key groups:
 - **Quota**: `JOB_QUOTA_MAX_SUBMISSIONS` (default 5, `0` disables) per user
   per rolling `JOB_QUOTA_WINDOW_HOURS` (default 24). Over the limit, `POST
   /jobs` returns 429 with a `Retry-After` header (seconds); failed
-  dispatches don't count.
+  dispatches don't count. `GET /jobs/quota` reports the current user's
+  usage for the frontend.
 
 ## Build & deploy
 

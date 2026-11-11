@@ -23,6 +23,7 @@ from app.schemas.job import (
     JobCreate,
     JobCreateResponse,
     JobListResponse,
+    JobQuotaResponse,
     JobRead,
     JobValidateResponse,
 )
@@ -204,6 +205,29 @@ async def list_jobs(
     )
     jobs = result.scalars().all()
     return JobListResponse(items=jobs, total=total or 0, page=page, page_size=page_size)
+
+
+@router.get("/quota", response_model=JobQuotaResponse)
+async def get_job_quota(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> JobQuotaResponse:
+    """The current user's submission quota, so the frontend can show e.g.
+    "3 of 5 used, next free slot at 14:32" before a submit hits the 429.
+
+    Read-only and unlocked, so it's a snapshot: POST /jobs re-checks under a
+    lock regardless.
+    """
+    settings = get_settings()
+    limit = settings.job_quota_max_submissions or None
+    used, next_slot_at = await _quota_usage(db, current_user, datetime.now(UTC))
+    return JobQuotaResponse(
+        limit=limit,
+        window_hours=settings.job_quota_window_hours,
+        used=used,
+        remaining=None if limit is None else max(0, limit - used),
+        next_slot_at=None if limit is None else next_slot_at,
+    )
 
 
 @router.get("/{job_id}/input.json")
