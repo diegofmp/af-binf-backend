@@ -1,14 +1,41 @@
 # af-binf-backend
 
 Self-service AlphaFold (v2/v3) job submission API. Users authenticate via
-company SSO (OIDC), submit AF2/AF3 jobs through this API, and the request is
-submitted straight to the HPC cluster (SLURM, over SSH) before the response
-comes back. Backend only — a separate React frontend consumes this API.
+company SSO (OIDC), submit AF2/AF3 jobs through this API, and a dispatcher
+process hands them to the HPC cluster (SLURM, over SSH). Backend only — a
+separate React frontend consumes this API.
 
-This is deliberately the simplest version that's still useful: no queue, no
-background workers, no result/log fetching yet — a job is either `submitted`
-or `failed` by the time `POST /jobs` returns. See
-[docs/auth.md](docs/auth.md) for the session/CSRF design rationale.
+`POST /jobs` returns `202` with the job `queued`. The dispatcher then moves
+it to `dispatching` and on to `submitted` or `failed`; the frontend polls
+`GET /jobs/{id}` (which includes `queue_position` while queued). No
+result/log fetching yet. See [docs/auth.md](docs/auth.md) for the
+session/CSRF design rationale.
+
+### Why a dispatch queue
+
+Every HPC call logs in as the same SSH service account, so the cluster sees
+all users as one client. Instead of each request opening its own SSH
+connection, a single dispatcher (`python -m app.dispatcher`) drains the queue
+for everyone:
+
+- **One call at a time, at a fixed pace**: at least
+  `HPC_DISPATCH_MIN_INTERVAL_SECONDS` between calls, over one reused SSH
+  connection. More concurrent users means a longer queue, not more load on
+  the HPC.
+- **Fair between users**: by default the next job comes from the user who
+  has waited longest since their last dispatch (round-robin), so one user's
+  burst doesn't hold everyone else back. The ordering is a pluggable policy
+  (`HPC_DISPATCH_ORDER`: `fair` or `fifo`); see `app/dispatch_queue.py` for
+  how to add one.
+- **Exactly one active dispatcher**: a Postgres advisory lock; extra copies
+  wait as standbys.
+- **HPC down**: jobs stay `queued` and the dispatcher backs off
+  (`HPC_DISPATCH_BACKOFF_*`) instead of failing them. `HPC_QUEUE_MAX_DEPTH`
+  bounds the backlog (`POST /jobs` returns 503 past it).
+- **No double submissions**: a job is only retried if the SSH connection
+  couldn't be opened (nothing was sent). If the connection breaks after the
+  command was sent, or the dispatcher dies mid-call, the job is marked
+  `failed` rather than risk a duplicate SLURM job.
 
 ## Stack
 
@@ -28,6 +55,8 @@ app/
   hpc.py        SSH dispatch only - runs the HPC-side script as
                 `<script> <job_id>`; that script pulls the input JSON itself
                 and owns sbatch generation/submission (see Notes/TODOs below)
+  dispatch_queue.py  fair ordering of queued jobs (shared by API + dispatcher)
+  dispatcher.py      the dispatcher process: `python -m app.dispatcher`
 alembic/        migrations
 tests/
 docs/auth.md
@@ -95,11 +124,17 @@ See [.env.example](.env.example) for the full list with comments. Key groups:
   job's input JSON back from us). For local testing without cluster access,
   `HPC_DISPATCH_MODE=fake` skips SSH and reports success after
   `HPC_FAKE_DISPATCH_DELAY_SECONDS` (refused when `APP_ENV=production`).
+- **Dispatch queue**: `HPC_DISPATCH_MIN_INTERVAL_SECONDS` (default 10 →
+  at most 360 dispatches/hour), `HPC_DISPATCH_ORDER` (`fair`/`fifo`),
+  `HPC_DISPATCH_POLL_INTERVAL_SECONDS`,
+  `HPC_DISPATCH_BACKOFF_INITIAL_SECONDS`/`_MAX_SECONDS`,
+  `HPC_SSH_IDLE_CLOSE_SECONDS`, `HPC_QUEUE_MAX_DEPTH` (default 200, `0`
+  disables).
 - **Quota**: `JOB_QUOTA_MAX_SUBMISSIONS` (default 5, `0` disables) per user
-  per rolling `JOB_QUOTA_WINDOW_HOURS` (default 24). Over the limit, `POST
-  /jobs` returns 429 with a `Retry-After` header (seconds); failed
-  dispatches don't count. `GET /jobs/quota` reports the current user's
-  usage for the frontend.
+  per rolling `JOB_QUOTA_WINDOW_HOURS` (default 24). Queued jobs count;
+  failed dispatches don't. Over the limit, `POST /jobs` returns 429 with a
+  `Retry-After` header (seconds). `GET /jobs/quota` reports the current
+  user's usage for the frontend.
 
 ## Build & deploy
 
@@ -142,11 +177,13 @@ pytest
 ```
 
 Tests use an in-memory SQLite DB (via `aiosqlite`) and a fake Redis (via
-`fakeredis`) for sessions. The SSH dispatch call itself is monkeypatched
-(see `tests/conftest.py::patch_hpc_dispatch`) — no external services or real
-cluster access required. Coverage includes: the session/`get_current_user`
-dependency, AF2/AF3 input validation (accepting valid payloads, rejecting
-malformed ones), and the submit request/response flow (success + failure).
+`fakeredis`) for sessions. The dispatcher tests use a fake HPC connection
+(`tests/conftest.py::FakeHPC`) — no external services or real cluster access
+required. Coverage includes: the session/`get_current_user` dependency,
+AF2/AF3 input validation (accepting valid payloads, rejecting malformed
+ones), the submit/queue flow, fair dispatch ordering, and the dispatcher's
+success/failure/HPC-down/crash-recovery paths. The Postgres advisory lock
+isn't exercised under SQLite.
 
 ## Notes / TODOs
 
@@ -154,13 +191,12 @@ malformed ones), and the submit request/response flow (success + failure).
   approximations of AlphaFold2/3 input conventions — marked `# TODO: confirm
   against actual pipeline input spec` pending the finalized HPC-side
   pipeline scripts.
-- Our responsibility ends at dispatch: `app/hpc.py::dispatch_job` SSHes in
-  and runs the HPC-side script (`HPC_DISPATCH_SCRIPT_AF2`/`_AF3`) with the
-  job id as its only argument. That script pulls the input JSON itself (GET
-  `/api/jobs/{id}/input.json`), parses it, and builds/submits the `sbatch`
-  job — none of that lives in this repo.
-- `app/hpc.py` opens a fresh SSH connection per request and blocks the
-  request until the dispatch script returns. This is the known limitation to
-  fix next: dispatch should move off the request path onto a queue (Celery)
-  with a background worker retrying on transient SSH failures — not
-  something a user's browser tab should wait on or need to stay open for.
+- Our responsibility ends at dispatch: `app/hpc.py::HPCConnection.dispatch`
+  runs the HPC-side script (`HPC_DISPATCH_SCRIPT_AF2`/`_AF3`) over SSH with
+  the job id as its only argument. That script pulls the input JSON itself
+  (GET `/api/jobs/{id}/input.json`), parses it, and builds/submits the
+  `sbatch` job — none of that lives in this repo.
+- Deployments need the dispatcher running alongside the API (same image,
+  command `python -m app.dispatcher`). Without it, jobs stay `queued`
+  forever. k8s: a Deployment with `replicas: 1` (a second replica is only a
+  standby) and `terminationGracePeriodSeconds` ≥ 90.

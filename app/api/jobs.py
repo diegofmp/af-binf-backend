@@ -4,7 +4,6 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
-from fastapi.concurrency import run_in_threadpool
 from pydantic import ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,7 +12,7 @@ from app.auth.pull_token import get_job_by_pull_api_key
 from app.auth.session import get_current_user
 from app.config import get_settings
 from app.db import get_db
-from app.hpc import dispatch_job
+from app.dispatch_queue import pending_dispatch_count, queue_position
 from app.logging import get_logger
 from app.models.job import Job, JobStatus
 from app.models.user import User
@@ -30,6 +29,13 @@ from app.schemas.job import (
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 logger = get_logger(__name__)
+
+# Statuses that count against the per-user quota: everything except `failed`,
+# since a failed dispatch never reached the cluster.
+_QUOTA_STATUSES = (JobStatus.QUEUED, JobStatus.DISPATCHING, JobStatus.SUBMITTED)
+
+# What 503 "queue full" tells clients to wait before retrying.
+_QUEUE_FULL_RETRY_AFTER_SECONDS = 60
 
 
 def _validated_input(payload: JobCreate) -> AF2Input | AF3Input:
@@ -55,15 +61,15 @@ async def _quota_usage(
 ) -> tuple[int, datetime | None]:
     """How many of `user`'s jobs count against the quota right now, and when
     the earliest of them leaves the rolling window (freeing a slot) - None if
-    none count. Only `submitted` jobs count; failed dispatches never reached
-    the cluster.
+    none count. Queued, dispatching and submitted jobs count; failed dispatches
+    never reached the cluster.
     """
     window = timedelta(hours=get_settings().job_quota_window_hours)
     used, oldest = (
         await db.execute(
             select(func.count(), func.min(Job.created_at)).where(
                 Job.user_id == user.id,
-                Job.status == JobStatus.SUBMITTED,
+                Job.status.in_(_QUOTA_STATUSES),
                 Job.created_at >= now - window,
             )
         )
@@ -81,8 +87,8 @@ async def _enforce_submission_quota(db: AsyncSession, user: User) -> None:
 
     Locks the user's row first so two concurrent submissions from the same
     user can't both see "4 of 5" and both get through; the lock is held until
-    the caller's commit of the new job (before dispatch, so not across SSH).
-    SQLite (tests) ignores FOR UPDATE, which is fine there.
+    the caller's commit of the new job. SQLite (tests) ignores FOR UPDATE,
+    which is fine there.
     """
     settings = get_settings()
     limit = settings.job_quota_max_submissions
@@ -109,6 +115,34 @@ async def _enforce_submission_quota(db: AsyncSession, user: User) -> None:
     )
 
 
+async def _enforce_queue_depth(db: AsyncSession) -> None:
+    """Reject with 503 if too many jobs, across all users, are already waiting
+    for dispatch - typically because the HPC has been unreachable for a while.
+
+    A soft cap: not locked, so concurrent submissions can overshoot it by a
+    few. That's fine; it only exists to keep the backlog bounded.
+    """
+    max_depth = get_settings().hpc_queue_max_depth
+    if max_depth == 0:
+        return
+    depth = await pending_dispatch_count(db)
+    if depth < max_depth:
+        return
+    logger.warning("jobs.create.queue_full", depth=depth, max_depth=max_depth)
+    raise HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail="the submission queue is full, please try again later",
+        headers={"Retry-After": str(_QUEUE_FULL_RETRY_AFTER_SECONDS)},
+    )
+
+
+async def _job_read(db: AsyncSession, job: Job) -> JobRead:
+    read = JobRead.model_validate(job)
+    if job.status == JobStatus.QUEUED:
+        read.queue_position = await queue_position(db, job.id)
+    return read
+
+
 @router.post("/validate", response_model=JobValidateResponse)
 async def validate_job(
     payload: JobCreate,
@@ -119,30 +153,30 @@ async def validate_job(
     Lets the frontend show validation errors as their own step, ahead of a
     separate "confirm submission" action that hits POST /jobs. That endpoint
     re-validates from scratch regardless - this is purely a cheaper upfront
-    check so a bad payload doesn't have to reach the DB insert + SSH dispatch
-    to be caught.
+    check so a bad payload doesn't have to reach the DB insert to be caught.
     """
     validated_input = _validated_input(payload)
     return JobValidateResponse(normalized_input=validated_input.model_dump(mode="json"))
 
 
-@router.post("", response_model=JobCreateResponse, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=JobCreateResponse, status_code=status.HTTP_202_ACCEPTED)
 async def create_job(
     payload: JobCreate,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> JobCreateResponse:
-    """Validate `input`, record the job, and dispatch it to the HPC side over SSH.
+    """Validate `input` and queue the job for dispatch to the HPC.
 
-    Our part ends at dispatch: make the input JSON pull-able (GET
-    /jobs/{id}/input.json) and run the HPC-side script that fetches it,
-    parses it, and submits to SLURM - all on that side. Synchronous: the
-    request blocks until the dispatch script returns, so a job is either
-    `submitted` or `failed` (dispatch failed) by the time this returns; we
-    have no visibility into the eventual SLURM outcome here.
+    Returns 202 with the job `queued`; nothing is sent to the HPC during the
+    request. The dispatcher process (app.dispatcher) later runs the HPC-side
+    script that pulls the input JSON (GET /jobs/{id}/input.json) and submits
+    to SLURM, moving the job to `dispatching` and then `submitted` or
+    `failed`. Poll GET /jobs/{id} to follow it; `queue_position` shows how
+    many jobs are ahead while it's queued.
     """
     validated_input = _validated_input(payload)
     await _enforce_submission_quota(db, current_user)
+    await _enforce_queue_depth(db)
 
     # af3 inputs don't have a `general` block yet (see app.schemas.af3's TODO),
     # so this is None there for now.
@@ -153,34 +187,19 @@ async def create_job(
         version=payload.version,
         name=payload.name,
         sample_id=sample_id,
-        status=JobStatus.SUBMITTED,
+        status=JobStatus.QUEUED,
         input_payload=validated_input.model_dump(mode="json"),
     )
     db.add(job)
-    await db.commit()
-    await db.refresh(job)  # need job.id before dispatch: the HPC side pulls input.json by it
-
-    try:
-        dispatch_output = await run_in_threadpool(dispatch_job, job)
-    except Exception as exc:
-        job.status = JobStatus.FAILED
-        job.error_message = f"dispatch failed: {exc}"
-        await db.commit()
-        logger.error("jobs.create.dispatch_failed", job_id=str(job.id), error=str(exc))
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY, detail=job.error_message
-        ) from exc
-
-    job.hpc_job_id = dispatch_output or None
     await db.commit()
     await db.refresh(job)
 
     settings = get_settings()
     pull_url = f"{settings.backend_public_base_url.rstrip('/')}/api/jobs/{job.id}/input.json"
 
-    logger.info("jobs.create.ok", job_id=str(job.id), user_id=str(current_user.id))
+    logger.info("jobs.create.queued", job_id=str(job.id), user_id=str(current_user.id))
     return JobCreateResponse(
-        **JobRead.model_validate(job).model_dump(),
+        **(await _job_read(db, job)).model_dump(),
         input_pull_url=pull_url,
     )
 
@@ -252,8 +271,9 @@ async def get_job(
     job_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-) -> Job:
-    """Get a single job scoped to the current user.
+) -> JobRead:
+    """Get a single job scoped to the current user. Poll this after POST /jobs
+    to follow the job from `queued` to `submitted` or `failed`.
 
     Returns 404 (not 403) when the job exists but belongs to someone else, so a user can't
     distinguish "not mine" from "doesn't exist" by probing IDs.
@@ -262,4 +282,4 @@ async def get_job(
     job = result.scalar_one_or_none()
     if job is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="job not found")
-    return job
+    return await _job_read(db, job)

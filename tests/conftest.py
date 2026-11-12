@@ -12,12 +12,17 @@ os.environ["SESSION_COOKIE_SECURE"] = "false"
 os.environ["APP_SECRET_KEY"] = "test-secret"
 os.environ["OIDC_CLIENT_SECRET"] = "test-oidc-secret"
 os.environ["HPC_PULL_API_KEY"] = "test-pull-key"
+# Pin settings tests rely on, so a developer's local .env (read by Settings)
+# can't change them.
+os.environ["HPC_DISPATCH_MODE"] = "ssh"
+os.environ["JOB_QUOTA_MAX_SUBMISSIONS"] = "5"
+os.environ["JOB_QUOTA_WINDOW_HOURS"] = "24"
+os.environ["HPC_QUEUE_MAX_DEPTH"] = "200"
 
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
-import app.api.jobs as jobs_module
 import app.auth.session as session_module
 from app.db import Base
 from app.db import engine as app_engine
@@ -47,32 +52,37 @@ async def _patch_redis(fake_redis, monkeypatch):
     yield
 
 
-class _FakeHPCDispatch:
-    """Stub the SSH dispatch call so tests never touch a real cluster.
+class FakeHPC:
+    """Stand-in for app.hpc.HPCConnection, so dispatcher tests never touch a
+    real cluster.
 
-    Records each call so tests can assert on what would have been dispatched,
-    and returns fake dispatch-script stdout. Set `.fail_next = True` to
-    simulate the dispatch script failing on the next call.
+    Records each dispatched job id and returns fake dispatch-script stdout.
+    Set `.fail_next` to an exception to raise it on the next dispatch.
     """
 
     def __init__(self) -> None:
-        self.calls: list[dict] = []
-        self.fail_next = False
+        self.calls: list[uuid.UUID] = []
+        self.fail_next: Exception | None = None
+        self.closed = 0
         self._counter = itertools.count(1)
 
-    def __call__(self, job):
-        self.calls.append({"job_id": job.id, "version": job.version})
-        if self.fail_next:
-            self.fail_next = False
-            raise RuntimeError("simulated dispatch failure")
+    def dispatch(self, job) -> str:
+        self.calls.append(job.id)
+        if self.fail_next is not None:
+            exc, self.fail_next = self.fail_next, None
+            raise exc
         return f"dispatched fake-{next(self._counter)}"
 
+    def close_if_idle(self, idle_seconds: float) -> None:
+        pass
 
-@pytest.fixture(autouse=True)
-def patch_hpc_dispatch(monkeypatch):
-    fake_dispatch = _FakeHPCDispatch()
-    monkeypatch.setattr(jobs_module, "dispatch_job", fake_dispatch)
-    return fake_dispatch
+    def close(self) -> None:
+        self.closed += 1
+
+
+@pytest.fixture
+def fake_hpc() -> FakeHPC:
+    return FakeHPC()
 
 
 @pytest_asyncio.fixture

@@ -1,7 +1,7 @@
 import uuid
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.models.job import Job, JobStatus, JobVersion
 from app.models.user import User
@@ -16,7 +16,9 @@ VALID_AF2_INPUT = {
 }
 
 
-async def test_submit_job_success(authed_client, patch_hpc_dispatch):
+async def test_submit_job_queues_without_dispatching(authed_client, db_session):
+    import app.hpc as hpc_module
+
     resp = await authed_client.post(
         "/jobs",
         json={
@@ -25,38 +27,83 @@ async def test_submit_job_success(authed_client, patch_hpc_dispatch):
             "input": VALID_AF2_INPUT,
         },
     )
-    assert resp.status_code == 201
+    assert resp.status_code == 202
     body = resp.json()
-    assert body["status"] == "submitted"
-    assert body["hpc_job_id"] is not None
+    assert body["status"] == "queued"
+    assert body["queue_position"] == 1
+    assert body["hpc_job_id"] is None
     assert body["error_message"] is None
 
-    assert len(patch_hpc_dispatch.calls) == 1
-    call = patch_hpc_dispatch.calls[0]
-    assert str(call["job_id"]) == body["id"]
-    assert call["version"].value == "af2"
+    job = await db_session.get(Job, uuid.UUID(body["id"]))
+    assert job.status == JobStatus.QUEUED
+    assert job.dispatch_started_at is None
+    # Nothing in the request path talks to the HPC.
+    assert "dispatch_job" not in vars(hpc_module)
 
 
-async def test_submit_job_records_failure_when_dispatch_fails(authed_client, patch_hpc_dispatch, db_session):
-    patch_hpc_dispatch.fail_next = True
+async def test_queue_position_spans_users_and_clears_once_dispatched(
+    authed_client, db_session
+):
+    other_user = User(sso_subject="sub-other", email="other@example.com", display_name="Other")
+    db_session.add(other_user)
+    await db_session.commit()
+    # Explicitly earlier: SQLite's CURRENT_TIMESTAMP only has 1s resolution.
+    earlier = datetime.now(UTC) - timedelta(minutes=1)
+    db_session.add(
+        _job_for(other_user.id, status=JobStatus.QUEUED, name="theirs", created_at=earlier)
+    )
+    await db_session.commit()
 
     resp = await authed_client.post(
-        "/jobs",
-        json={
-            "version": "af2",
-            "name": "test job",
-            "input": VALID_AF2_INPUT,
-        },
+        "/jobs", json={"version": "af2", "name": "mine", "input": VALID_AF2_INPUT}
     )
-    assert resp.status_code == 502
+    job_id = resp.json()["id"]
+    assert resp.json()["queue_position"] == 2
 
-    result = await db_session.execute(select(Job).where(Job.name == "test job"))
-    job = result.scalar_one()
-    assert job.status == JobStatus.FAILED
-    assert "simulated dispatch failure" in job.error_message
+    job = await db_session.get(Job, uuid.UUID(job_id))
+    job.status = JobStatus.SUBMITTED
+    await db_session.commit()
+
+    body = (await authed_client.get(f"/jobs/{job_id}")).json()
+    assert body["status"] == "submitted"
+    assert body["queue_position"] is None
 
 
-async def test_validate_job_accepts_valid_input(authed_client, patch_hpc_dispatch, db_session):
+async def test_submit_rejected_when_queue_full(authed_client, db_session, monkeypatch):
+    from app.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "hpc_queue_max_depth", 2)
+    other_user = User(sso_subject="sub-other", email="other@example.com", display_name="Other")
+    db_session.add(other_user)
+    await db_session.commit()
+    db_session.add_all(
+        [
+            _job_for(other_user.id, status=JobStatus.QUEUED),
+            _job_for(other_user.id, status=JobStatus.DISPATCHING),
+            # Submitted and failed jobs don't take up queue space.
+            _job_for(other_user.id, status=JobStatus.SUBMITTED),
+            _job_for(other_user.id, status=JobStatus.FAILED),
+        ]
+    )
+    await db_session.commit()
+
+    resp = await authed_client.post(
+        "/jobs", json={"version": "af2", "name": "too many", "input": VALID_AF2_INPUT}
+    )
+    assert resp.status_code == 503
+    assert "queue is full" in resp.json()["detail"]
+    assert int(resp.headers["Retry-After"]) > 0
+    result = await db_session.execute(select(Job).where(Job.name == "too many"))
+    assert result.scalar_one_or_none() is None
+
+    monkeypatch.setattr(get_settings(), "hpc_queue_max_depth", 0)
+    resp = await authed_client.post(
+        "/jobs", json={"version": "af2", "name": "unlimited", "input": VALID_AF2_INPUT}
+    )
+    assert resp.status_code == 202
+
+
+async def test_validate_job_accepts_valid_input(authed_client, db_session):
     resp = await authed_client.post(
         "/jobs/validate",
         json={
@@ -68,8 +115,7 @@ async def test_validate_job_accepts_valid_input(authed_client, patch_hpc_dispatc
     assert resp.status_code == 200
     assert resp.json()["valid"] is True
 
-    # No job created, no dispatch attempted.
-    assert len(patch_hpc_dispatch.calls) == 0
+    # No job created.
     result = await db_session.execute(select(Job).where(Job.name == "test job"))
     assert result.scalar_one_or_none() is None
 
@@ -251,15 +297,17 @@ def _job_for(user_id, *, created_at=None, status=JobStatus.SUBMITTED, name="seed
     return job
 
 
-async def test_submission_quota_rejects_over_limit(authed_client, patch_hpc_dispatch):
+async def test_submission_quota_rejects_over_limit(authed_client, db_session):
     from app.config import get_settings
 
     limit = get_settings().job_quota_max_submissions
+    # None of these get dispatched (no dispatcher runs here): queued jobs
+    # count toward the quota too.
     for i in range(limit):
         resp = await authed_client.post(
             "/jobs", json={"version": "af2", "name": f"job {i}", "input": VALID_AF2_INPUT}
         )
-        assert resp.status_code == 201
+        assert resp.status_code == 202
 
     resp = await authed_client.post(
         "/jobs", json={"version": "af2", "name": "one too many", "input": VALID_AF2_INPUT}
@@ -268,8 +316,8 @@ async def test_submission_quota_rejects_over_limit(authed_client, patch_hpc_disp
     assert "submission limit reached" in resp.json()["detail"]
     retry_after = int(resp.headers["Retry-After"])
     assert 0 < retry_after <= get_settings().job_quota_window_hours * 3600
-    # Rejected before anything was recorded or dispatched.
-    assert len(patch_hpc_dispatch.calls) == limit
+    # Rejected before anything was recorded.
+    assert await db_session.scalar(select(func.count()).select_from(Job)) == limit
 
 
 async def test_submission_quota_ignores_failed_old_and_other_users_jobs(
@@ -299,7 +347,7 @@ async def test_submission_quota_ignores_failed_old_and_other_users_jobs(
         resp = await authed_client.post(
             "/jobs", json={"version": "af2", "name": f"job {i}", "input": VALID_AF2_INPUT}
         )
-        assert resp.status_code == 201
+        assert resp.status_code == 202
 
     resp = await authed_client.post(
         "/jobs", json={"version": "af2", "name": "job 3", "input": VALID_AF2_INPUT}
@@ -315,7 +363,7 @@ async def test_submission_quota_zero_disables_limit(authed_client, monkeypatch):
         resp = await authed_client.post(
             "/jobs", json={"version": "af2", "name": f"job {i}", "input": VALID_AF2_INPUT}
         )
-        assert resp.status_code == 201
+        assert resp.status_code == 202
 
 
 async def test_quota_endpoint_for_new_user(authed_client):
