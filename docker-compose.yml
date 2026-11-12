@@ -46,5 +46,25 @@ services:
       sh -c "alembic upgrade head &&
              uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
 
+  # Sends queued jobs to the HPC, one at a time (see app/dispatcher.py).
+  # Run exactly one: extra copies only wait as standbys (Postgres advisory
+  # lock), they don't increase the dispatch rate.
+  dispatcher:
+    build: .
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://af_binf:af_binf@postgres:5432/af_binf
+      REDIS_URL: redis://redis:6379/0
+    volumes:
+      - .:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # Restarts until the api container has applied the migrations.
+    restart: unless-stopped
+    # Let an in-flight dispatch (SSH command timeout: 60s) finish on shutdown.
+    stop_grace_period: 90s
+    command: python -m app.dispatcher
+
 volumes:
   postgres_data:

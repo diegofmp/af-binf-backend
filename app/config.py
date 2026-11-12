@@ -72,10 +72,34 @@ class Settings(BaseSettings):
     hpc_dispatch_mode: Literal["ssh", "fake"] = "ssh"
     hpc_fake_dispatch_delay_seconds: float = Field(default=3.0, ge=0)
 
-    # Per-user submission quota: at most `job_quota_max_submissions` successfully
-    # dispatched jobs in any rolling `job_quota_window_hours` window. Failed
-    # dispatches don't count (they never reached the cluster). 0 disables the
-    # limit.
+    # Dispatch queue (see app.dispatcher). POST /jobs only queues a job; a single
+    # dispatcher process sends queued jobs to the HPC one at a time, for all
+    # users, so the call rate to the shared SSH account doesn't depend on how
+    # many users submit at once.
+    # Minimum gap between two dispatch calls to the HPC. This is the setting to
+    # agree on with the HPC admins: it caps dispatches at 3600/N per hour.
+    hpc_dispatch_min_interval_seconds: float = Field(default=10.0, ge=0)
+    # Which queued job goes next (app.dispatch_queue.ORDER_POLICIES): "fair" is
+    # round-robin between users, "fifo" is first come, first served. Read by
+    # both the dispatcher and the API (queue positions); restart both after
+    # changing it.
+    hpc_dispatch_order: Literal["fair", "fifo"] = "fair"
+    # How often the dispatcher checks for new queued jobs when the queue is empty.
+    hpc_dispatch_poll_interval_seconds: float = Field(default=2.0, gt=0)
+    # While the HPC is unreachable, jobs stay queued and the dispatcher waits
+    # before trying again: starting at `initial`, doubling up to `max`.
+    hpc_dispatch_backoff_initial_seconds: float = Field(default=15.0, gt=0)
+    hpc_dispatch_backoff_max_seconds: float = Field(default=300.0, gt=0)
+    # Close the reused SSH connection after this long with no dispatch.
+    hpc_ssh_idle_close_seconds: float = Field(default=300.0, gt=0)
+    # Max jobs waiting to be dispatched (queued + dispatching), across all
+    # users. Beyond that, POST /jobs returns 503 so the backlog can't grow
+    # without bound while the HPC is down. 0 disables the cap.
+    hpc_queue_max_depth: int = Field(default=200, ge=0)
+
+    # Per-user submission quota: at most `job_quota_max_submissions` jobs
+    # (queued, dispatching or submitted) in any rolling `job_quota_window_hours`
+    # window. Failed dispatches don't count. 0 disables the limit.
     job_quota_max_submissions: int = Field(default=5, ge=0)
     job_quota_window_hours: int = Field(default=24, ge=1)
 

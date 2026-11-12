@@ -211,7 +211,7 @@ async def test_submitting_af3_job_with_malformed_input_is_rejected(authed_client
     assert resp.status_code == 422
 
 
-async def test_submitting_valid_af2_job_creates_submitted_job(authed_client):
+async def test_submitting_valid_af2_job_creates_queued_job(authed_client):
     resp = await authed_client.post(
         "/jobs",
         json={
@@ -220,10 +220,9 @@ async def test_submitting_valid_af2_job_creates_submitted_job(authed_client):
             "input": {"general": GENERAL, "sample": _af2_sample()},
         },
     )
-    assert resp.status_code == 201
+    assert resp.status_code == 202
     body = resp.json()
     assert body["version"] == "af2"
     assert body["name"] == "my first fold"
-    assert body["status"] == "submitted"
-    # the SSH dispatch call itself is stubbed in tests - see
-    # tests/conftest.py::patch_hpc_dispatch and test_job_flow.py.
+    # Dispatch happens later, in app.dispatcher - see tests/test_dispatcher.py.
+    assert body["status"] == "queued"

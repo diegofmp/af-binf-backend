@@ -23,8 +23,18 @@ class JobVersion(str, enum.Enum):
 
 
 class JobStatus(str, enum.Enum):
+    # Waiting for the dispatcher (app.dispatcher) to send it to the HPC.
+    QUEUED = "queued"
+    # The dispatcher has picked it up and is running the HPC-side script.
+    DISPATCHING = "dispatching"
+    # The dispatch script succeeded. What happens in SLURM afterwards isn't
+    # visible to us.
     SUBMITTED = "submitted"
     FAILED = "failed"
+
+
+# Statuses of jobs still waiting for their dispatch call.
+PENDING_DISPATCH_STATUSES = (JobStatus.QUEUED, JobStatus.DISPATCHING)
 
 
 class Job(Base):
@@ -62,13 +72,19 @@ class Job(Base):
             values_callable=lambda enum_cls: [e.value for e in enum_cls],
         ),
         nullable=False,
-        default=JobStatus.SUBMITTED,
+        default=JobStatus.QUEUED,
         index=True,
+    )
+    # When the dispatcher last picked this job up. Per user, the latest value
+    # drives fair ordering between users (see app.dispatch_queue). Reset to
+    # NULL if the HPC turned out to be unreachable, since nothing was sent.
+    dispatch_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
     )
 
     input_payload: Mapped[dict[str, Any]] = mapped_column(_JSONVariant, nullable=False)
 
-    # Stdout of the HPC-side dispatch script (see app.hpc.dispatch_job), not a
+    # Stdout of the HPC-side dispatch script (see app.hpc.HPCConnection.dispatch), not a
     # SLURM job id - we have no synchronous visibility into the eventual
     # `sbatch` submission, which happens entirely on the HPC side. Text, not a
     # short String, since script stdout isn't bounded the way a job id was.
